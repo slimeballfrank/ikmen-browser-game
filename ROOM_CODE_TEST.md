@@ -19,3 +19,6 @@ The Worker only exchanges WebRTC setup messages. Actual match bytes are intended
 2. Open it in two independent browser sessions, such as regular Chrome and an Incognito window.
 3. In both games, open the game's Netplay option. The host leaves the server/IP field blank; the second player enters the displayed four-character code.
 4. Do not consider the room code alone proof of success. Verify peer-to-peer status and complete a match. Start with delay-based netplay; rollback has not been verified.
+
+
+Build status: experimental patch; successful compilation and real two-browser gameplay are required before calling it ready.
