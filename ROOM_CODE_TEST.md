@@ -22,3 +22,5 @@ The Worker only exchanges WebRTC setup messages. Actual match bytes are intended
 
 
 Build status: experimental patch; successful compilation and real two-browser gameplay are required before calling it ready.
+
+Build script updated to apply source edits with explicit marker checks.
