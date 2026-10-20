@@ -26,12 +26,7 @@ jobs:
 
       - name: Apply experimental room-code netplay patch
         if: github.ref_name == 'netplay-test'
-        run: |
-          git -C source apply "$GITHUB_WORKSPACE/patches/netplay.patch"
-          cp patches/netplay_transport_js.go source/engine/src/netplay_transport_js.go
-          cp patches/netplay_transport_native.go source/engine/src/netplay_transport_native.go
-          cp patches/room-code.js source/web/room-code.js
-          node --check source/web/room-code.js
+        run: python patches/apply_netplay_patch.py source
 
       - name: Install Go
         uses: actions/setup-go@v5
