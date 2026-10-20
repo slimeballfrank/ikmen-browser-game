@@ -2,7 +2,7 @@ name: Build itch.io browser ZIP
 
 on:
   push:
-    branches: [main]
+    branches: [main, netplay-test]
   workflow_dispatch:
 
 permissions:
@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ZIP_NAME: ${{ github.ref_name == 'netplay-test' && 'Ikemen-GO-room-code-test.zip' || 'Ikemen-GO-itch-upload.zip' }}
+      ARTIFACT_NAME: ${{ github.ref_name == 'netplay-test' && 'Ikemen-GO-room-code-test' || 'Ikemen-GO-itch-upload' }}
     steps:
       - name: Check out this build repository
         uses: actions/checkout@v4
@@ -20,6 +23,15 @@ jobs:
         with:
           repository: mathmati/fiiight
           path: source
+
+      - name: Apply experimental room-code netplay patch
+        if: github.ref_name == 'netplay-test'
+        run: |
+          git -C source apply "$GITHUB_WORKSPACE/patches/netplay.patch"
+          cp patches/netplay_transport_js.go source/engine/src/netplay_transport_js.go
+          cp patches/netplay_transport_native.go source/engine/src/netplay_transport_native.go
+          cp patches/room-code.js source/web/room-code.js
+          node --check source/web/room-code.js
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -38,19 +50,20 @@ jobs:
           test -s source/web/ikemen.wasm
           test -s source/web/wasm_exec.js
           test -s source/web/content.zip
-          echo "All required browser files were created."
+          if [ "$GITHUB_REF_NAME" = "netplay-test" ]; then test -s source/web/room-code.js; fi
+          echo "Required browser files were created."
 
       - name: Package itch.io upload ZIP
         run: |
           cd source/web
-          zip -qr ../../Ikemen-GO-itch-upload.zip .
+          zip -qr "../../$ZIP_NAME" .
           cd ../..
-          ls -lh Ikemen-GO-itch-upload.zip
+          ls -lh "$ZIP_NAME"
 
-      - name: Save itch.io upload ZIP
+      - name: Save browser ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: Ikemen-GO-itch-upload
-          path: Ikemen-GO-itch-upload.zip
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
           retention-days: 14
