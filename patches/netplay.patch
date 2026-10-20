@@ -1,0 +1,224 @@
+--- a/engine/src/netplay.go
++++ b/engine/src/netplay.go
+@@ -172,8 +172,8 @@
+ 
+ // NetConnection manages the communication between players
+ type NetConnection struct {
+-	ln               *net.TCPListener
+-	conn             *net.TCPConn
++	ln               net.Listener
++	conn             net.Conn
+ 	st               NetState
+ 	sendEnd          chan bool
+ 	recvEnd          chan bool
+@@ -301,18 +301,12 @@
+ 
+ func (nc *NetConnection) Accept(port string) error {
+-	ln, err := net.Listen("tcp", ":"+port)
++	ln, err := listenNetplay(port)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	tcpLn, ok := ln.(*net.TCPListener)
+-	if !ok {
+-		ln.Close()
+-		return fmt.Errorf("failed to cast net.Listener to *net.TCPListener")
+-	}
+-
+-	nc.ln = tcpLn
++	nc.ln = ln
+ 	nc.host = true
+ 	nc.conn = nil // Make sure this is a new connection
+ 	nc.locIn, nc.remIn = nc.GetHostGuestRemap()
+@@ -321,7 +315,7 @@
+ 	SafeGo(func() {
+ 		defer lnLocal.Close()
+ 
+-		tempConn, err := lnLocal.AcceptTCP()
++		tempConn, err := lnLocal.Accept()
+ 		if err != nil {
+ 			return
+ 		}
+@@ -335,34 +329,34 @@
+ 		_ = tempConn.SetDeadline(time.Now().Add(2 * time.Second))
+ 
+ 		if sys.cfg.Netplay.RollbackNetcode {
+-			sys.rollback.session.remoteIp = tempConn.RemoteAddr().(*net.TCPAddr).IP.String()
++			remoteHost, _, splitErr := net.SplitHostPort(tempConn.RemoteAddr().String())
++			if splitErr != nil {
++				remoteHost = tempConn.RemoteAddr().String()
++			}
++			sys.rollback.session.remoteIp = remoteHost
+ 		}
+ 
+-		//Send handshake
++		// Send handshake
+ 		if _, err := tempConn.Write([]byte("IKEMENGO")); err != nil {
+ 			tempConn.Close()
+ 			return
+ 		}
+ 
+ 		// Wait for client acknowledgment
+-		ack := make([]byte, 8) // Length of our "password"
++		ack := make([]byte, 8)
+ 		_, err = io.ReadFull(tempConn, ack)
+ 		if err != nil || string(ack) != "IKEMENGO" {
+ 			tempConn.Close()
+ 			return
+ 		}
+ 
+-		// Handshake complete; clear deadlines for normal play.
+ 		_ = tempConn.SetDeadline(time.Time{})
+-
+-		// Handshake complete. Make temp connection permanent
+ 		if nc.isClosing() {
+ 			tempConn.Close()
+ 			return
+ 		}
+ 		nc.conn = tempConn
+ 	})
+-
+ 	return nil
+ }
+ 
+@@ -372,51 +366,39 @@
+ 	nc.remIn, nc.locIn = nc.GetHostGuestRemap()
+ 
+ 	SafeGo(func() {
+-		d := net.Dialer{Timeout: 1 * time.Second}
+ 		for {
+ 			if nc.isClosing() {
+ 				return
+ 			}
+-			tempConn, err := d.Dial("tcp", server+":"+port)
++			tempConn, err := dialNetplay(server, port)
+ 			if err != nil {
+ 				time.Sleep(100 * time.Millisecond)
+ 				continue
+ 			}
+-
+-			tcpConn := tempConn.(*net.TCPConn)
+ 			if nc.isClosing() {
+-				tcpConn.Close()
++				tempConn.Close()
+ 				return
+ 			}
+ 
+-			// Don't allow the handshake to block forever (important when shutting down).
+-			_ = tcpConn.SetDeadline(time.Now().Add(2 * time.Second))
+-
+-			// Wait for host handshake
++			_ = tempConn.SetDeadline(time.Now().Add(2 * time.Second))
+ 			buf := make([]byte, 8)
+-			_, err = io.ReadFull(tcpConn, buf)
++			_, err = io.ReadFull(tempConn, buf)
+ 			if err != nil || string(buf) != "IKEMENGO" {
+-				tcpConn.Close()
++				tempConn.Close()
+ 				time.Sleep(100 * time.Millisecond)
+ 				continue
+ 			}
+-
+-			// Send acknowledgment
+-			if _, err := tcpConn.Write([]byte("IKEMENGO")); err != nil {
+-				tcpConn.Close()
++			if _, err := tempConn.Write([]byte("IKEMENGO")); err != nil {
++				tempConn.Close()
+ 				time.Sleep(100 * time.Millisecond)
+ 				continue
+ 			}
+-
+-			// Handshake complete; clear deadlines for normal play.
+-			_ = tcpConn.SetDeadline(time.Time{})
+-
+-			// Handshake complete. Make temp connection permanent
++			_ = tempConn.SetDeadline(time.Time{})
+ 			if nc.isClosing() {
+-				tcpConn.Close()
++				tempConn.Close()
+ 				return
+ 			}
+-			nc.conn = tcpConn
++			nc.conn = tempConn
+ 			return
+ 		}
+ 	})
+--- a/engine/src/script.go
++++ b/engine/src/script.go
+@@ -2497,9 +2497,13 @@
+ 		@tparam string host Host address (IP or hostname). If an empty string, listen
+ 		  for an incoming connection; otherwise connect to the given host.
+ 		function enterNetPlay(host) end*/
++		host := strArg(l, 1)
+ 		if sys.netConnection != nil {
+ 			l.RaiseError("\nConnection already established.\n")
+ 		}
++		if err := prepareNetplayTransport(host); err != nil {
++			l.RaiseError(err.Error())
++		}
+ 		sys.sessionWarning = ""
+ 		sys.chars = [len(sys.chars)][]*Char{}
+ 		sys.netConnection = NewNetConnection()
+@@ -2510,7 +2514,7 @@
+ 			sys.rollback.session = &rs
+ 		}
+ 
+-		if host := strArg(l, 1); host != "" {
++		if host != "" {
+ 			//Rollback only
+ 			if sys.cfg.Netplay.RollbackNetcode {
+ 				sys.rollback.session.host = host
+ 			}
+--- a/web/index.html
++++ b/web/index.html
+@@ -86,6 +86,29 @@
+ 		pointer-events: none;
+ 	}
+ 	#credit a { color: #777; pointer-events: auto; }
++	#room-code-panel {
++		position: fixed;
++		top: 12px;
++		right: 12px;
++		z-index: 20;
++		width: min(300px, calc(100vw - 24px));
++		box-sizing: border-box;
++		padding: 12px 14px;
++		border: 1px solid #555;
++		border-radius: 10px;
++		background: rgba(12, 12, 16, 0.94);
++		color: #eee;
++		font: 13px/1.45 system-ui, sans-serif;
++		box-shadow: 0 4px 18px #0008;
++	}
++	#room-code-panel strong { color: #fff; }
++	#room-code-panel .room-code-value {
++		font-size: 28px;
++		font-weight: 800;
++		letter-spacing: .22em;
++		margin: 4px 0;
++	}
++	#room-code-panel .room-note { color: #aaa; font-size: 11px; }
+ 	#error {
+ 		display: none;
+ 		max-width: min(90vw, 700px);
+@@ -111,6 +134,12 @@
+ 	<div id="status">Starting&hellip;</div>
+ 	<pre id="error"></pre>
+ </div>
++<aside id="room-code-panel" aria-live="polite">
++	<strong>ONLINE ROOM</strong>
++	<div id="room-code-value" class="room-code-value">----</div>
++	<div id="room-code-status">Choose Netplay in the game menu to create or join a room.</div>
++	<div class="room-note">Host: leave the IP field blank. Join: enter the 4-character room code in the server field.</div>
++</aside>
+ <div id="credit"><a href="https://github.com/ikemen-engine/Ikemen-GO">Ikemen GO</a> &mdash; engine MIT, assets CC-BY 3.0 Ikemen team &middot; <a href="https://github.com/mathmati/fiiight">browser port</a></div>
+ <script src="wasm_exec.js"></script>
+ <script src="fs-shim.js"></script>
+@@ -118,5 +147,6 @@
+ <script src="touch.js"></script>
+ <script src="loader.js"></script>
+ <script src="fullscreen.js"></script>
++<script src="room-code.js"></script>
+ </body>
+ </html>
