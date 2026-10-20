@@ -1,0 +1,56 @@
+name: Build itch.io browser ZIP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this build repository
+        uses: actions/checkout@v4
+
+      - name: Check out the existing fiiight browser game
+        uses: actions/checkout@v4
+        with:
+          repository: mathmati/fiiight
+          path: source
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.7'
+          cache: true
+          cache-dependency-path: source/engine/go.sum
+
+      - name: Build browser game
+        working-directory: source
+        run: bash build/wasm.sh
+
+      - name: Verify required browser files
+        run: |
+          test -s source/web/index.html
+          test -s source/web/ikemen.wasm
+          test -s source/web/wasm_exec.js
+          test -s source/web/content.zip
+          echo "All required browser files were created."
+
+      - name: Package itch.io upload ZIP
+        run: |
+          cd source/web
+          zip -qr ../../Ikemen-GO-itch-upload.zip .
+          cd ../..
+          ls -lh Ikemen-GO-itch-upload.zip
+
+      - name: Save itch.io upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ikemen-GO-itch-upload
+          path: Ikemen-GO-itch-upload.zip
+          if-no-files-found: error
+          retention-days: 14
